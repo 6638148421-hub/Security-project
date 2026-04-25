@@ -118,4 +118,6 @@ These 10 map directly to core DVWA modules and represent high-value web security
 
 - `dvwa_results.md` (smoke run)
 - `dvwa_deep_results.md` (deep run)
+- `dvwa_results_grading.md` (smoke grading view)
+- `dvwa_deep_results_grading.md` (deep grading view)
 - screenshots of manual validation points listed in `VULNERABILITY_TEST_RUNBOOK.md`
