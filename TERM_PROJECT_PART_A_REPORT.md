@@ -22,6 +22,23 @@ Suggested interpretation:
 > - URLs and methods below are based on standard DVWA modules and typical requests.
 > - You should capture screenshots or HTTP evidence from your own lab run when submitting.
 
+## Re-rated vulnerability summary (quick view)
+
+| # | Vulnerability | E | P | D | I | Total | Risk |
+|---|---|---:|---:|---:|---:|---:|---|
+| 1 | SQL Injection (Classic) | 3 | 3 | 3 | 3 | 12 | High |
+| 2 | Blind SQL Injection | 2 | 2 | 2 | 3 | 9 | Medium |
+| 3 | Command Injection | 3 | 2 | 2 | 3 | 10 | High |
+| 4 | Reflected XSS | 3 | 3 | 3 | 2 | 11 | High |
+| 5 | Stored XSS | 3 | 2 | 2 | 3 | 10 | High |
+| 6 | CSRF | 3 | 2 | 2 | 2 | 9 | Medium |
+| 7 | File Inclusion (LFI/RFI) | 2 | 2 | 2 | 3 | 9 | Medium |
+| 8 | Unrestricted File Upload | 3 | 2 | 2 | 3 | 10 | High |
+| 9 | Weak Brute-Force Protection | 3 | 3 | 3 | 2 | 11 | High |
+| 10 | Weak Session ID / Session Management | 2 | 2 | 2 | 3 | 9 | Medium |
+
+> Interpretation reminder: 10–12 = High, 7–9 = Medium, 4–6 = Low.
+
 ---
 
 ## 1) SQL Injection (Classic)
