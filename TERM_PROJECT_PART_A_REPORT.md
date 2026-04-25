@@ -116,8 +116,9 @@ These 10 map directly to core DVWA modules and represent high-value web security
 
 ## Evidence files to attach with this report
 
-- `dvwa_results.md` (smoke run)
-- `dvwa_deep_results.md` (deep run)
+- `PARTA_TOMORROW_ACTION_PLAN.md` (execution checklist)
+- `dvwa_results.md` (smoke run output)
+- `dvwa_deep_results.md` (deep run output)
 - `dvwa_results_grading.md` (smoke grading view)
 - `dvwa_deep_results_grading.md` (deep grading view)
 - screenshots of manual validation points listed in `VULNERABILITY_TEST_RUNBOOK.md`
