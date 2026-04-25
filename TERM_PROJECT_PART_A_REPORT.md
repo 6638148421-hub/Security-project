@@ -1,296 +1,121 @@
 # 2190413 Computer Security — Term Project Part A (DVWA)
 
-Student deliverable draft for **at least 8 vulnerabilities/threats** in DVWA, with OWASP-style risk scoring and fix/mitigation guidance.
+This document is the final Part A write-up for DVWA and is optimized for peer grading.
 
-## Scoring method used
+## Scope and scoring model
 
-Per the assignment rubric, each vulnerability is scored on 4 criteria:
-
+OWASP-style 4-factor score per vulnerability:
 - **Exploitability (E)**: Difficult=1, Average=2, Easy=3
 - **Weakness Prevalence (P)**: Uncommon=1, Common=2, Widespread=3
 - **Weakness Detectability (D)**: Difficult=1, Average=2, Easy=3
 - **Technical Impact (I)**: Minor=1, Moderate=2, Severe=3
 
-**Total Risk Score = E + P + D + I** (range: 4 to 12)
-
-Suggested interpretation:
-- **10–12**: High
-- **7–9**: Medium
-- **4–6**: Low
-
-> Notes:
-> - URLs and methods below are based on standard DVWA modules and typical requests.
-> - You should capture screenshots or HTTP evidence from your own lab run when submitting.
-
-## Re-rated vulnerability summary (quick view)
-
-| # | Vulnerability | E | P | D | I | Total | Risk |
-|---|---|---:|---:|---:|---:|---:|---|
-| 1 | SQL Injection (Classic) | 3 | 3 | 3 | 3 | 12 | High |
-| 2 | Blind SQL Injection | 2 | 2 | 2 | 3 | 9 | Medium |
-| 3 | Command Injection | 3 | 2 | 2 | 3 | 10 | High |
-| 4 | Reflected XSS | 3 | 3 | 3 | 2 | 11 | High |
-| 5 | Stored XSS | 3 | 2 | 2 | 3 | 10 | High |
-| 6 | CSRF | 3 | 2 | 2 | 2 | 9 | Medium |
-| 7 | File Inclusion (LFI/RFI) | 2 | 2 | 2 | 3 | 9 | Medium |
-| 8 | Unrestricted File Upload | 3 | 2 | 2 | 3 | 10 | High |
-| 9 | Weak Brute-Force Protection | 3 | 3 | 3 | 2 | 11 | High |
-| 10 | Weak Session ID / Session Management | 2 | 2 | 2 | 3 | 9 | Medium |
-
-> Interpretation reminder: 10–12 = High, 7–9 = Medium, 4–6 = Low.
+**Total score = E + P + D + I** (min 4, max 12)
+- **High**: 10–12
+- **Medium**: 7–9
+- **Low**: 4–6
 
 ---
+
+## Re-rated summary table (10 vulnerabilities)
+
+| # | Vulnerability | Module/Endpoint | Method | E | P | D | I | Total | Risk |
+|---|---|---|---|---:|---:|---:|---:|---:|---|
+| 1 | SQL Injection (Classic) | `/vulnerabilities/sqli/` | GET | 3 | 3 | 3 | 3 | 12 | High |
+| 2 | Blind SQL Injection | `/vulnerabilities/sqli_blind/` | GET | 2 | 2 | 2 | 3 | 9 | Medium |
+| 3 | Command Injection | `/vulnerabilities/exec/` | POST | 3 | 2 | 2 | 3 | 10 | High |
+| 4 | Reflected XSS | `/vulnerabilities/xss_r/` | GET | 3 | 3 | 3 | 2 | 11 | High |
+| 5 | Stored XSS | `/vulnerabilities/xss_s/` | POST | 3 | 2 | 2 | 3 | 10 | High |
+| 6 | CSRF | `/vulnerabilities/csrf/` | GET/POST state-change | 3 | 2 | 2 | 2 | 9 | Medium |
+| 7 | File Inclusion (LFI/RFI) | `/vulnerabilities/fi/` | GET | 2 | 2 | 2 | 3 | 9 | Medium |
+| 8 | Unrestricted File Upload | `/vulnerabilities/upload/` | POST multipart | 3 | 2 | 2 | 3 | 10 | High |
+| 9 | Weak Brute-Force Protection | `/vulnerabilities/brute/` | GET/POST login attempts | 3 | 3 | 3 | 2 | 11 | High |
+| 10 | Weak Session ID | `/vulnerabilities/weak_id/` | POST session generation | 2 | 2 | 2 | 3 | 9 | Medium |
+
+---
+
+## Per-vulnerability grading blocks (concise and consistent)
 
 ## 1) SQL Injection (Classic)
-
-- **Endpoint/Module**: `/vulnerabilities/sqli/`
-- **HTTP Method**: `GET`
-- **Typical parameter**: `id`
-- **Threat description**: The server builds SQL queries by concatenating unsanitized user input. An attacker can inject SQL syntax to read, alter, or delete database data.
-
-### Example attack flow (for lab demonstration only)
-1. User input is expected to be numeric ID (e.g., `id=1`).
-2. Attacker sends payload such as `id=1' OR '1'='1`.
-3. Query logic becomes always true and returns unintended rows.
-4. With union/error-based techniques, attacker can enumerate schema and extract sensitive records.
-
-### Risk scoring (OWASP 4 factors)
-- **Exploitability**: `3 (Easy)` — payloads are simple and widely documented.
-- **Weakness Prevalence**: `3 (Widespread)` — historically common in apps with dynamic SQL.
-- **Weakness Detectability**: `3 (Easy)` — scanners/manual probes detect quickly.
-- **Technical Impact**: `3 (Severe)` — confidentiality/integrity impact can be complete DB compromise.
-- **Total Risk Score**: `12/12 (High)`
-
-### Vulnerable coding pattern (concept)
-```php
-// ❌ vulnerable pattern
-$sql = "SELECT first_name, last_name FROM users WHERE user_id = '$id'";
-$result = mysqli_query($conn, $sql);
-```
-
-### Secure fix (recommended)
-Use **prepared statements** and bind parameters to keep user input as data, not SQL code.
-
-```php
-// ✅ secure pattern with PDO
-$stmt = $pdo->prepare('SELECT first_name, last_name FROM users WHERE user_id = :id');
-$stmt->bindValue(':id', (int)$_GET['id'], PDO::PARAM_INT);
-$stmt->execute();
-$rows = $stmt->fetchAll();
-```
-
-### Additional hardening
-- Enforce strict server-side validation (`id` must be integer and in allowed range).
-- Use least-privilege DB account (`SELECT` only where possible).
-- Suppress verbose SQL errors from end users (log internally).
-- Add monitoring/WAF signatures for SQLi patterns as defense in depth.
-
-### Verification after fix
-- Normal request `id=1` still works.
-- Attack payloads (e.g., tautology, UNION) return no unauthorized data.
-- Security scanner no longer reports injectable parameter.
-
----
+- **Endpoint/Method**: `/vulnerabilities/sqli/` (GET, `id` parameter)
+- **Description**: Input is concatenated into SQL; attacker can dump/modify DB data.
+- **Score**: E3 P3 D3 I3 = **12 (High)**
+- **Fix/Mitigation**: Prepared statements (parameterized SQL), strict type validation, least-privilege DB user, generic error responses.
+- **Verify after fix**: `id=1' OR '1'='1` does not expand result set.
 
 ## 2) Blind SQL Injection
-
-- **Endpoint/Module**: `/vulnerabilities/sqli_blind/`
-- **Method**: `GET`/`POST` (depends on DVWA level)
-- **Threat description**: No direct SQL error output, but boolean/time-based payloads still leak data.
-
-### Risk scoring
-- Exploitability: **2 (Average)**
-- Weakness Prevalence: **2 (Common)**
-- Weakness Detectability: **2 (Average)**
-- Technical Impact: **3 (Severe)**
-- **Total = 9 (Medium)**
-
-### Fix / Mitigation
-- Same primary fix as SQLi: **prepared statements**.
-- Generic error handling (no DB error details in responses).
-- WAF/rate limiting to reduce automation of inference attacks.
-
----
+- **Endpoint/Method**: `/vulnerabilities/sqli_blind/` (GET)
+- **Description**: Data leaked via inference (boolean/time-based) without visible SQL errors.
+- **Score**: E2 P2 D2 I3 = **9 (Medium)**
+- **Fix/Mitigation**: Prepared statements, remove differential error/timing behaviors where possible, rate limit probing.
+- **Verify after fix**: `SLEEP` payload does not create reliable timing delta.
 
 ## 3) Command Injection
+- **Endpoint/Method**: `/vulnerabilities/exec/` (POST)
+- **Description**: Shell metacharacters in user input execute arbitrary OS commands.
+- **Score**: E3 P2 D2 I3 = **10 (High)**
+- **Fix/Mitigation**: Avoid shell calls, use safe APIs, strict allowlist validation, least OS privileges.
+- **Verify after fix**: payload `127.0.0.1;id` returns no injected command output.
 
-- **Endpoint/Module**: `/vulnerabilities/exec/`
-- **Method**: `POST` (e.g., `ip` argument passed to shell command)
-- **Threat description**: User input is injected into OS command, enabling arbitrary command execution.
+## 4) Reflected XSS
+- **Endpoint/Method**: `/vulnerabilities/xss_r/` (GET)
+- **Description**: Input is reflected unescaped and can execute JavaScript in victim browser.
+- **Score**: E3 P3 D3 I2 = **11 (High)**
+- **Fix/Mitigation**: Context-aware output encoding (`htmlspecialchars`), CSP defense-in-depth, input constraints.
+- **Verify after fix**: script payload is encoded, not executed.
 
-### Risk scoring
-- Exploitability: **3 (Easy)**
-- Weakness Prevalence: **2 (Common)**
-- Weakness Detectability: **2 (Average)**
-- Technical Impact: **3 (Severe)**
-- **Total = 10 (High)**
+## 5) Stored XSS
+- **Endpoint/Method**: `/vulnerabilities/xss_s/` (POST)
+- **Description**: Malicious payload persists and executes for any viewer of stored content.
+- **Score**: E3 P2 D2 I3 = **10 (High)**
+- **Fix/Mitigation**: Encode on output, sanitize rich text, CSP, secure cookie settings.
+- **Verify after fix**: payload is stored safely (not executable context).
 
-### Fix / Mitigation
-- Avoid shell execution entirely; use safe library/network APIs.
-- If unavoidable, use strict allowlist validation and argument escaping.
-- Run web service with least OS privileges and container/AppArmor/SELinux confinement.
-
----
-
-## 4) Reflected Cross-Site Scripting (XSS)
-
-- **Endpoint/Module**: `/vulnerabilities/xss_r/`
-- **Method**: `GET` (reflected parameter)
-- **Threat description**: Malicious JavaScript is reflected to victim browser and executed in app origin.
-
-### Risk scoring
-- Exploitability: **3 (Easy)**
-- Weakness Prevalence: **3 (Widespread)**
-- Weakness Detectability: **3 (Easy)**
-- Technical Impact: **2 (Moderate)**
-- **Total = 11 (High)**
-
-### Fix / Mitigation
-- Context-aware output encoding (`htmlspecialchars` for HTML context).
-- Input validation for expected format.
-- Add CSP (`Content-Security-Policy`) as defense in depth.
-
----
-
-## 5) Stored Cross-Site Scripting (XSS)
-
-- **Endpoint/Module**: `/vulnerabilities/xss_s/`
-- **Method**: `POST` (payload stored server-side, then rendered)
-- **Threat description**: Persistent script executes for every viewer of infected content.
-
-### Risk scoring
-- Exploitability: **3 (Easy)**
-- Weakness Prevalence: **2 (Common)**
-- Weakness Detectability: **2 (Average)**
-- Technical Impact: **3 (Severe)**
-- **Total = 10 (High)**
-
-### Fix / Mitigation
-- Output encode on rendering and sanitize rich text inputs.
-- Use HTTPOnly + SameSite cookies to reduce session theft risk.
-- CSP and modern framework templating auto-escaping.
-
----
-
-## 6) Cross-Site Request Forgery (CSRF)
-
-- **Endpoint/Module**: `/vulnerabilities/csrf/`
-- **Method**: `GET` or `POST` state-changing action (password change)
-- **Threat description**: Victim browser sends authenticated request without user intent.
-
-### Risk scoring
-- Exploitability: **3 (Easy)**
-- Weakness Prevalence: **2 (Common)**
-- Weakness Detectability: **2 (Average)**
-- Technical Impact: **2 (Moderate)**
-- **Total = 9 (Medium)**
-
-### Fix / Mitigation
-- Synchronizer **CSRF token** on all state-changing actions.
-- Enforce `SameSite` cookies and verify Origin/Referer headers.
-- Require re-authentication for sensitive operations.
-
----
+## 6) CSRF
+- **Endpoint/Method**: `/vulnerabilities/csrf/` (state-changing request)
+- **Description**: Authenticated user can be tricked into unintended state changes.
+- **Score**: E3 P2 D2 I2 = **9 (Medium)**
+- **Fix/Mitigation**: CSRF token, SameSite cookies, Origin/Referer verification, re-auth for sensitive actions.
+- **Verify after fix**: forged request without valid token is rejected.
 
 ## 7) File Inclusion (LFI/RFI)
-
-- **Endpoint/Module**: `/vulnerabilities/fi/`
-- **Method**: `GET` (page/file parameter)
-- **Threat description**: Attacker controls include path; can read local files or include remote code (if enabled).
-
-### Risk scoring
-- Exploitability: **2 (Average)**
-- Weakness Prevalence: **2 (Common)**
-- Weakness Detectability: **2 (Average)**
-- Technical Impact: **3 (Severe)**
-- **Total = 9 (Medium)**
-
-### Fix / Mitigation
-- Never pass raw user input to `include/require`.
-- Use route allowlist mapping (ID -> known file).
-- Disable remote URL includes; harden PHP config and filesystem permissions.
-
----
+- **Endpoint/Method**: `/vulnerabilities/fi/` (GET, `page`)
+- **Description**: User-controlled include path enables local file disclosure / remote include risk.
+- **Score**: E2 P2 D2 I3 = **9 (Medium)**
+- **Fix/Mitigation**: Route allowlist mapping, never include raw user input, harden PHP include settings.
+- **Verify after fix**: traversal payload cannot read `/etc/passwd`.
 
 ## 8) Unrestricted File Upload
+- **Endpoint/Method**: `/vulnerabilities/upload/` (POST multipart)
+- **Description**: Executable file upload can lead to web shell / remote code execution.
+- **Score**: E3 P2 D2 I3 = **10 (High)**
+- **Fix/Mitigation**: extension+MIME+magic-byte allowlist, store outside web root, disable script execution in upload path.
+- **Verify after fix**: `.php` upload rejected and unreachable.
 
-- **Endpoint/Module**: `/vulnerabilities/upload/`
-- **Method**: `POST` multipart upload
-- **Threat description**: Upload of executable script/web shell leading to remote code execution.
+## 9) Weak Brute-Force Protection
+- **Endpoint/Method**: `/vulnerabilities/brute/` (repeated login attempts)
+- **Description**: Missing lockout/rate limit allows automated password guessing.
+- **Score**: E3 P3 D3 I2 = **11 (High)**
+- **Fix/Mitigation**: throttling/backoff, lockout, MFA, detection + alerts.
+- **Verify after fix**: repeated failures trigger measurable controls.
 
-### Risk scoring
-- Exploitability: **3 (Easy)**
-- Weakness Prevalence: **2 (Common)**
-- Weakness Detectability: **2 (Average)**
-- Technical Impact: **3 (Severe)**
-- **Total = 10 (High)**
-
-### Fix / Mitigation
-- Allowlist file type by MIME + extension + magic-byte checks.
-- Store files outside web root and rename to random UUID.
-- Disable script execution in upload directory.
-- Virus scan and size limits.
-
----
-
-## 9) Weak Brute-Force Protection (Authentication Threat)
-
-- **Endpoint/Module**: `/vulnerabilities/brute/`
-- **Method**: `GET`/`POST` login attempts
-- **Threat description**: No effective lockout/rate limit enables credential stuffing/brute force.
-
-### Risk scoring
-- Exploitability: **3 (Easy)**
-- Weakness Prevalence: **3 (Widespread)**
-- Weakness Detectability: **3 (Easy)**
-- Technical Impact: **2 (Moderate)**
-- **Total = 11 (High)**
-
-### Fix / Mitigation
-- Rate limiting, exponential backoff, temporary account/IP lockout.
-- MFA for privileged users.
-- Detect and alert suspicious authentication patterns.
+## 10) Weak Session ID
+- **Endpoint/Method**: `/vulnerabilities/weak_id/` (session generation)
+- **Description**: Predictable session IDs enable hijacking/guessing.
+- **Score**: E2 P2 D2 I3 = **9 (Medium)**
+- **Fix/Mitigation**: cryptographically random IDs, regenerate on login/privilege change, secure cookie flags.
+- **Verify after fix**: generated IDs are non-predictable and high entropy.
 
 ---
 
-## 10) Weak Session ID / Session Management
+## Why these 10 are strong for DVWA Part A
 
-- **Endpoint/Module**: `/vulnerabilities/weak_id/`
-- **Method**: Session issuance and cookie handling
-- **Threat description**: Predictable or poorly protected session tokens can be guessed/stolen.
-
-### Risk scoring
-- Exploitability: **2 (Average)**
-- Weakness Prevalence: **2 (Common)**
-- Weakness Detectability: **2 (Average)**
-- Technical Impact: **3 (Severe)**
-- **Total = 9 (Medium)**
-
-### Fix / Mitigation
-- Use cryptographically secure random session IDs.
-- Set cookie flags: `Secure`, `HttpOnly`, `SameSite`.
-- Regenerate session ID on login/privilege changes.
-- Short idle timeout + server-side invalidation.
+These 10 map directly to core DVWA modules and represent high-value web security classes typically expected in secure-coding coursework. They are defensible in low mode and still useful for comparing behavior at higher security levels.
 
 ---
 
-## Optional bonus vulnerabilities to discuss
+## Evidence files to attach with this report
 
-If you want to score more than 10 entries (bonus up to 12), you can add:
-- DOM XSS (`/vulnerabilities/xss_d/`)
-- CSP misconfiguration (`/vulnerabilities/csp/`)
-- CAPTCHA bypass logic weaknesses (`/vulnerabilities/captcha/`)
-- Insecure anti-CSRF implementation in custom flows
-
----
-
-## Suggested submission format (for peer review clarity)
-
-For each item, include:
-1. Module URL + HTTP method
-2. Vulnerability explanation + example payload (safe/redacted)
-3. Risk score breakdown (E/P/D/I) + total
-4. Concrete fix in code/config + why it works
-5. Verification steps after fixing (negative test)
-
-This structure maps directly to your grading criteria and makes your work easy to evaluate.
+- `dvwa_results.md` (smoke run)
+- `dvwa_deep_results.md` (deep run)
+- screenshots of manual validation points listed in `VULNERABILITY_TEST_RUNBOOK.md`
